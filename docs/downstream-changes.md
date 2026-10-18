@@ -17,6 +17,7 @@ change's implementation, tests, and documentation together.
 | ID | Change | Upstream PR / Status |
 | --- | --- | --- |
 | [FIX-001](#fix-001-exclusive-responses-websocket-upgrades) | Exclusive Responses WebSocket upgrades | — / Local |
+| [FIX-002](#fix-002-connection-local-responses-continuation) | Connection-local Responses continuation | — / Local |
 
 ## Maintenance
 
@@ -66,3 +67,56 @@ Route `/v1/responses` upgrades exclusively to CCH before invoking ordinary
 upgrade listeners. Keep normal listener dispatch for other paths, and reject
 upgrades when no ordinary listener is registered. Preserve each worker's private
 HTTP loopback target, payload limits, and shutdown cleanup.
+
+## FIX-002: Connection-local Responses continuation
+
+Code: [continuation.ts](../src/app/v1/_lib/responses-ws/continuation.ts),
+[upstream-adapter.ts](../src/app/v1/_lib/responses-ws/upstream-adapter.ts),
+[forwarder.ts](../src/app/v1/_lib/proxy/forwarder.ts),
+[provider-selector.ts](../src/app/v1/_lib/proxy/provider-selector.ts),
+[response-handler.ts](../src/app/v1/_lib/proxy/response-handler.ts),
+[server.js](../server.js).
+Tests: [upstream-adapter.test.ts](../src/app/v1/_lib/responses-ws/__tests__/upstream-adapter.test.ts),
+[server-ws-continuation.test.ts](../tests/unit/server-ws-continuation.test.ts),
+[response-handler-stream-terminal.test.ts](../tests/unit/proxy/response-handler-stream-terminal.test.ts).
+
+### Symptoms
+
+A client can receive `previous_response_not_found` while its WebSocket is still
+open. An incremental turn can reach a new upstream connection without the prior
+response's connection-local context. Remote Compaction v2 can also appear as a
+successful request when its WebSocket stream ends with this error.
+
+### Cause
+
+Logical session affinity does not guarantee reuse of the same physical upstream
+WebSocket. Route or credential changes, an upstream disconnect, a busy or evicted
+retained connection, or HTTP fallback can lose connection-local state. Replaying
+an incremental body on another connection cannot recover that state. The raw
+response policy used by compaction also skips general response-body diagnostics.
+
+### Solution
+
+Bind connection-local continuations to a live upstream connection and its
+Provider, endpoint, generation, and complete header fingerprint. Recheck the
+binding immediately before dispatch, respect current access and availability
+rules, and reject changes instead of creating a replacement connection or
+retrying the incremental input over HTTP or another Provider.
+
+Keep only the prior response's storage mode on each downstream connection and
+pass it through authenticated internal metadata. A later `store:true` request
+cannot make an earlier unstored response durable. Exclude connection-local chains
+from Replay and fake streaming; complete initial input can still use normal
+routing and HTTP fallback.
+
+When context is unavailable, return the structured `previous_response_not_found`
+error and close normally after the terminal frame is acknowledged. The client
+must resend the full context without the old ID; CCH never drops the ID and
+retries an incomplete conversation itself. Retain a downstream connection only
+when its last connection-local result came from the matching reusable upstream
+WebSocket, and discard queued frames when resetting it.
+
+Carry the exact structured WebSocket continuation failure into attempt-scoped
+finalization so compaction cannot record it as a successful HTTP 200. Preserve
+ordinary opaque HTTP handling and release request resources once, without
+penalizing Provider health for a lost continuation context.
