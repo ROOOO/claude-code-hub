@@ -18,6 +18,7 @@ change's implementation, tests, and documentation together.
 | --- | --- | --- |
 | [FIX-001](#fix-001-exclusive-responses-websocket-upgrades) | Exclusive Responses WebSocket upgrades | — / Local |
 | [FIX-002](#fix-002-connection-local-responses-continuation) | Connection-local Responses continuation | — / Local |
+| [FIX-003](#fix-003-consistent-codex-websocket-session-headers) | Consistent Codex WebSocket session headers | — / Local |
 
 ## Maintenance
 
@@ -120,3 +121,37 @@ Carry the exact structured WebSocket continuation failure into attempt-scoped
 finalization so compaction cannot record it as a successful HTTP 200. Preserve
 ordinary opaque HTTP handling and release request resources once, without
 penalizing Provider health for a lost continuation context.
+
+## FIX-003: Consistent Codex WebSocket session headers
+
+Code: [forwarder.ts](../src/app/v1/_lib/proxy/forwarder.ts).
+Tests: [proxy-forwarder.test.ts](../tests/unit/proxy/proxy-forwarder.test.ts),
+[responses-ws-session-header-continuation.test.ts](../tests/unit/proxy/responses-ws-session-header-continuation.test.ts).
+
+### Symptoms
+
+A normal Codex WebSocket turn and a later raw compaction turn can produce
+different outbound headers from the same handshake. Connection-local continuation
+protection then rejects compaction because its complete header fingerprint has
+changed.
+
+### Cause
+
+Normal session completion supplies both `session_id` and `x-session-id`, while
+raw compaction skips that preprocessing. A handshake carrying only one valid
+alias therefore produces inconsistent outbound headers. When both handshake
+aliases are absent, normal completion can also derive both headers from a valid
+body `prompt_cache_key`, while raw compaction omits them. The mismatch also exists
+in the consumed upstream baseline, where it can replace the upstream connection.
+
+### Solution
+
+For authenticated internal Codex WebSocket requests, copy a valid outbound
+session identifier into its missing header alias. Only when both outbound aliases
+are absent, use a valid body `prompt_cache_key` to supply both headers. Preserve
+explicitly supplied values, the request body, and the original request headers.
+Do not generate identifiers or substitute logical session or connection IDs when
+these sources are unavailable. Keep complete fingerprint checks for route,
+credential, and other header changes. This fix can be submitted independently of
+FIX-002 and FIX-004.
+
