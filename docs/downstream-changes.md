@@ -8,7 +8,7 @@ change's implementation, tests, and documentation together.
 ## Baseline
 
 - Consumed upstream: `ding113/claude-code-hub`, `main` at
-  `743643847cdf538a72d984663ee504d925e9579f` (v0.9.7).
+  `0c508eaac7e1f3c3717eb6a965b466e719f92b1e` (v0.9.8).
 - Upstream PR target: `ding113/claude-code-hub`, `dev`.
 - Fork: `ROOOO/claude-code-hub`, local development branch `dev`.
 
@@ -19,6 +19,8 @@ change's implementation, tests, and documentation together.
 | [FIX-001](#fix-001-exclusive-responses-websocket-upgrades) | Exclusive Responses WebSocket upgrades | — / Local |
 | [FIX-002](#fix-002-connection-local-responses-continuation) | Connection-local Responses continuation | — / Local |
 | [FIX-003](#fix-003-consistent-codex-websocket-session-headers) | Consistent Codex WebSocket session headers | — / Local |
+
+| [FEAT-001](#feat-001-native-codex-model-catalog) | Cached native Codex model catalog | — / Local |
 
 ## Maintenance
 
@@ -155,3 +157,16 @@ these sources are unavailable. Keep complete fingerprint checks for route,
 credential, and other header changes. This fix can be submitted independently of
 FIX-002 and FIX-004.
 
+
+## FEAT-001: Native Codex model catalog
+
+Publish authenticated native model metadata with current permissions, complete
+upstream capabilities, group-aware source selection and conservative context limits.
+A bounded process/Redis cache serves hot and stale directories immediately; refreshes
+run asynchronously with cross-worker deduplication, short Redis budgets and explicit
+failure classification. Preserve last-good data for transient failures, revoke it on
+upstream authentication rejection, and enforce separate source/response byte limits.
+Proxy connection failures retry directly once when enabled, sharing the original
+source deadline; HTTP and response-body failures do not trigger direct retries.
+
+See [configuration, cache behavior and validation](codex-model-catalog.md).
