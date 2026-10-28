@@ -1090,6 +1090,47 @@ describe("CCH Responses WebSocket edge E2E", () => {
     }
   });
 
+  test("delivers a multi-MiB terminal event and permits another turn on the same socket", async () => {
+    const { harness, close } = await startIsolatedCchEdgeHarness();
+    try {
+      harness.setResponseHandler(({ res, body }) => {
+        const large = body.input === "large-event";
+        res.statusCode = 200;
+        res.setHeader("content-type", "text/event-stream");
+        res.end(
+          eventChunk({
+            type: "response.completed",
+            response: {
+              id: large ? "resp_large_event" : "resp_after_large_event",
+              output: [{ text: large ? "x".repeat(2 * 1024 * 1024) : "next" }],
+            },
+          })
+        );
+      });
+      const client = connectRawWsClient(harness.port);
+      await client.opened;
+      sendResponseCreate(client, { model, input: "large-event" });
+      const first = await client.nextMessage(
+        completedResponse("resp_large_event"),
+        3000,
+        "large terminal event was not delivered"
+      );
+      expect(Buffer.byteLength(JSON.stringify(first))).toBeGreaterThan(1024 * 1024);
+      expect(client.ws.readyState).toBe(WebSocket.OPEN);
+      sendResponseCreate(client, { model, input: "after-large-event" });
+      await client.nextMessage(
+        completedResponse("resp_after_large_event"),
+        3000,
+        "socket was not reusable after a large event"
+      );
+      expect(cchInternalRequests(harness.events)).toHaveLength(2);
+      client.ws.close(1000, "test_done");
+      await client.closeEvent;
+    } finally {
+      await close();
+    }
+  });
+
   test("rejects internal bodies that cannot fit in one outbound WebSocket event", async () => {
     const { harness, close } = await startIsolatedCchEdgeHarness();
     try {
@@ -1097,12 +1138,12 @@ describe("CCH Responses WebSocket edge E2E", () => {
         if (body.input === "oversized-json") {
           res.statusCode = 200;
           res.setHeader("content-type", "application/json");
-          res.end("x".repeat(1024 * 1024 + 1));
+          res.end("x".repeat(8 * 1024 * 1024 + 1));
           return;
         }
         res.statusCode = 200;
         res.setHeader("content-type", "text/event-stream");
-        res.end(`data: ${"x".repeat(1024 * 1024 + 1)}`);
+        res.end(`data: ${"x".repeat(8 * 1024 * 1024 + 1)}`);
       });
 
       const jsonClient = connectRawWsClient(harness.port);

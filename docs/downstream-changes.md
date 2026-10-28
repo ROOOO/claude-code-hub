@@ -19,6 +19,7 @@ change's implementation, tests, and documentation together.
 | [FIX-001](#fix-001-exclusive-responses-websocket-upgrades) | Exclusive Responses WebSocket upgrades | — / Local |
 | [FIX-002](#fix-002-connection-local-responses-continuation) | Connection-local Responses continuation | — / Local |
 | [FIX-003](#fix-003-consistent-codex-websocket-session-headers) | Consistent Codex WebSocket session headers | — / Local |
+| [FIX-005](#fix-005-bounded-large-responses-websocket-response-forwarding) | Bounded large Responses WebSocket response forwarding | — / Local |
 
 | [FEAT-001](#feat-001-native-codex-model-catalog) | Cached native Codex model catalog | — / Local |
 
@@ -157,6 +158,49 @@ these sources are unavailable. Keep complete fingerprint checks for route,
 credential, and other header changes. This fix can be submitted independently of
 FIX-002 and FIX-004.
 
+
+## FIX-005: Bounded large Responses WebSocket response forwarding
+
+Code: [server.js](../server.js),
+[responses-ws-output.js](../server-lib/responses-ws-output.js).
+Tests: [server-ws-output.test.ts](../tests/unit/server-ws-output.test.ts),
+[server-response-write-backpressure.test.ts](../tests/unit/server-response-write-backpressure.test.ts).
+
+### Symptoms
+
+A valid Responses request can finish upstream while the client loses its
+WebSocket before receiving the terminal event. A large SSE response event triggers
+`internal_sse_event_too_large`, and the client can repeatedly submit the same
+conversation even when CCH has already recorded an upstream success.
+
+### Cause
+
+The custom server ties its internal SSE-event and JSON-response limits to a
+1 MiB outbound queue budget. This is smaller than the upstream WebSocket
+adapter's 8 MiB message limit. Raising only the SSE parser limit still leaves
+the send queue unable to accept a legitimate large event. The internal HTTP
+bridge must also stop reading when its downstream writer is under pressure.
+
+### Solution
+
+Bound each raw SSE event and each serialized outbound WebSocket message
+independently to 8 MiB of UTF-8 bytes. The SSE budget includes its `data:` and
+other framing lines but excludes the event delimiter; JSON-response wrapping
+must also fit the final WebSocket message budget. Retain a separate 16 MiB
+UTF-8 bound on the gross SSE buffer. Apply bounded parsing to fragmented LF
+and CRLF events and preserve complete JSON payloads and terminal events.
+Release consumed event data rather than retaining already-forwarded history
+in the aggregation buffer.
+
+Pause producers under send pressure and resume internal HTTP response reads
+after the corresponding WebSocket send callback succeeds. Acknowledge terminal
+completion only after its WebSocket send callback succeeds. Keep queued bytes
+bounded and release request ownership on send errors, timeouts, client closure,
+and oversized responses.
+
+This fix is independent of FIX-004's compaction error accounting and temporary
+observation hooks. Keep the FIX-005 implementation and regression tests separate
+from FIX-004.
 
 ## FEAT-001: Native Codex model catalog
 
